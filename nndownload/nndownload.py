@@ -148,6 +148,7 @@ dl_group.add_argument("-c", "--download-comments", action="store_true", dest="do
 dl_group.add_argument("-e", "--english", action="store_true", dest="download_english", help="request video on english site")
 dl_group.add_argument("-aq", "--audio-quality", dest="audio_quality", help="specify audio quality (DMC videos only)")
 dl_group.add_argument("-vq", "--video-quality", dest="video_quality", help="specify video quality (DMC videos only)")
+dl_group.add_argument("-sv", "--skip-video", action="store_true", dest="skip_video", help="skip download video")
 
 
 class AuthenticationException(Exception):
@@ -630,11 +631,34 @@ def request_video(session, video_id):
 
     document = BeautifulSoup(response.text, "html.parser")
 
-    template_params = perform_api_request(session, document)
+    if cmdl_opts.skip_video:
+        template_params = {}
+        # .mp4 videos (HTML5)
+        if document.find(id="js-initial-watch-data"):
+            params = json.loads(document.find(id="js-initial-watch-data")["data-api-data"])
+
+            if params["video"]["isDeleted"]:
+                raise FormatNotAvailableException("Video was deleted")
+
+            template_params = collect_parameters(session, template_params, params, is_html5=True)
+
+        # Flash videos (.flv, .swf)
+        # NicoMovieMaker videos (.swf) may need conversion to play properly in an external player
+        elif document.find(id="watchAPIDataContainer"):
+            params = json.loads(document.find(id="watchAPIDataContainer").text)
+
+            if params["videoDetail"]["isDeleted"]:
+                raise FormatNotAvailableException("Video was deleted")
+
+            template_params = collect_parameters(session, template_params, params, is_html5=False)
+
+    else:
+        template_params = perform_api_request(session, document)
 
     filename = create_filename(template_params)
 
-    download_video(session, filename, template_params)
+    if not cmdl_opts.skip_video:
+        download_video(session, filename, template_params)
     if cmdl_opts.dump_metadata:
         dump_metadata(filename, template_params)
     if cmdl_opts.download_thumbnail:
