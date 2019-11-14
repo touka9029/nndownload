@@ -52,7 +52,9 @@ SEIGA_USER_ID_RE = re.compile(r"user_id=(\d+)")
 THUMB_INFO_API = "http://ext.nicovideo.jp/api/getthumbinfo/{0}"
 MYLIST_API = "http://flapi.nicovideo.jp/api/getplaylist/mylist/{0}"
 COMMENTS_API = "http://nmsg.nicovideo.jp/api"
+COMMENTS_API_THREADKEY = "http://flapi.nicovideo.jp/api/getthreadkey?thread={0}"
 COMMENTS_POST_JP = "<packet><thread thread=\"{0}\" version=\"20061206\" res_from=\"-1000\" scores=\"1\"/></packet>"
+COMMENTS_POST_JP_SO = "<packet><thread thread=\"{0}\" version=\"20061206\" res_from=\"-1000\" user_id=\"{1}\" threadkey=\"{2}\" force_184=\"{3}\" scores=\"1\"/></packet>"
 COMMENTS_POST_EN = "<packet><thread thread=\"{0}\" version=\"20061206\" res_from=\"-1000\" language=\"1\" scores=\"1\"/></packet>"
 
 NAMA_HEARTBEAT_INTERVAL_S = 15
@@ -283,7 +285,7 @@ def create_filename(template_params, is_comic=False):
         return sanitize_for_path(filename)
 
 
-def read_file(session, file):
+def read_file(session, file, login_user_id):
     """Read file and process each line as a URL."""
 
     with open(file) as file:
@@ -295,7 +297,7 @@ def read_file(session, file):
             output("{0}/{1}\n".format(index + 1, total_lines), logging.INFO)
             url_mo = valid_url(line)
             if url_mo:
-                process_url_mo(session, url_mo)
+                process_url_mo(session, url_mo, login_user_id)
             else:
                 raise ArgumentException("Not a valid URL")
 
@@ -598,7 +600,7 @@ def download_image(session, image_id):
 
 ## Video methods
 
-def request_video(session, video_id):
+def request_video(session, video_id, login_user_id):
     """Request the video page and initiate download of the video URL."""
 
     # Determine whether to request the Flash or HTML5 player
@@ -664,10 +666,10 @@ def request_video(session, video_id):
     if cmdl_opts.download_thumbnail:
         download_thumbnail(session, filename, template_params)
     if cmdl_opts.download_comments:
-        download_comments(session, filename, template_params)
+        download_comments(session, filename, template_params, login_user_id)
 
 
-def request_user(session, user_id):
+def request_user(session, user_id, login_user_id):
     """Download videos associated with a user."""
 
     output("Downloading videos from user {0}...\n".format(user_id), logging.INFO)
@@ -698,7 +700,7 @@ def request_user(session, user_id):
     for index, video_id in enumerate(video_ids):
         try:
             output("{0}/{1}\n".format(index + 1, total_ids), logging.INFO)
-            request_video(session, video_id)
+            request_video(session, video_id, login_user_id)
 
         except (FormatNotSupportedException, FormatNotAvailableException, ParameterExtractionException) as error:
             log_exception(error)
@@ -706,7 +708,7 @@ def request_user(session, user_id):
             continue
 
 
-def request_mylist(session, mylist_id):
+def request_mylist(session, mylist_id, login_user_id):
     """Download videos associated with a mylist."""
 
     output("Downloading mylist {0}...\n".format(mylist_id), logging.INFO)
@@ -721,7 +723,7 @@ def request_mylist(session, mylist_id):
         for index, item in enumerate(items):
             try:
                 output("{0}/{1}\n".format(index + 1, len(items)), logging.INFO)
-                request_video(session, item["video_id"])
+                request_video(session, item["video_id"], login_user_id)
 
             except (FormatNotSupportedException, FormatNotAvailableException, ParameterExtractionException) as error:
                 log_exception(error)
@@ -1135,6 +1137,7 @@ def collect_parameters(session, template_params, params, is_html5):
         template_params["description"] = params["video"]["description"]
         template_params["thumbnail_url"] = params["video"]["thumbnailURL"]
         template_params["thread_id"] = int(params["thread"]["ids"]["default"])
+        template_params["thread_ids"] = params["thread"]["ids"]
         template_params["published"] = params["video"]["postedDateTime"]
         template_params["duration"] = params["video"]["duration"]
         template_params["view_count"] = params["video"]["viewCount"]
@@ -1149,6 +1152,7 @@ def collect_parameters(session, template_params, params, is_html5):
         template_params["description"] = params["videoDetail"]["description"]
         template_params["thumbnail_url"] = params["videoDetail"]["thumbnail"]
         template_params["thread_id"] = int(params["videoDetail"]["thread_id"])
+        template_params["thread_ids"] = params["thread"]["ids"]
         template_params["published"] = params["videoDetail"]["postedAt"]
         template_params["duration"] = params["videoDetail"]["length"]
         template_params["view_count"] = params["videoDetail"]["viewCount"]
@@ -1215,7 +1219,7 @@ def download_thumbnail(session, filename, template_params):
     output("Finished downloading thumbnail for {0}.\n".format(template_params["id"]), logging.INFO)
 
 
-def download_comments(session, filename, template_params):
+def download_comments(session, filename, template_params, login_user_id):
     """Download the video comments."""
 
     output("Downloading comments for {0}...\n".format(template_params["id"]), logging.INFO)
@@ -1223,10 +1227,18 @@ def download_comments(session, filename, template_params):
     filename = replace_extension(filename, "xml")
 
     if cmdl_opts.download_english:
-        post_packet = COMMENTS_POST_EN
+        post_packet = COMMENTS_POST_EN.format(template_params["thread_id"])
+    elif template_params['id'][:2] == 'so':
+        get_threadkey = session.get(COMMENTS_API_THREADKEY.format(template_params['thread_ids']['community']))
+        get_threadkey.raise_for_status()
+        mc = re.compile(r"threadkey=(.*)&force_184=(.*)").search(get_threadkey.text)
+        threadkey = mc.group(1)
+        force_184 = mc.group(2)
+        post_packet = COMMENTS_POST_JP_SO.format(template_params['thread_ids']['community'], login_user_id, threadkey, force_184)
     else:
-        post_packet = COMMENTS_POST_JP
-    get_comments = session.post(COMMENTS_API, post_packet.format(template_params["thread_id"]))
+        post_packet = COMMENTS_POST_JP.format(template_params["thread_id"])
+
+    get_comments = session.post(COMMENTS_API, post_packet)
     get_comments.raise_for_status()
     with open(filename, "wb") as file:
         file.write(get_comments.content)
@@ -1275,9 +1287,12 @@ def login(username, password):
             output("Failed to login.\n", logging.INFO)
             raise AuthenticationException("Failed to login. Please verify your username and password")
 
+        document = BeautifulSoup(response.text, "html.parser")
+        login_user_id = int(document.find(id='siteHeaderNotification')['data-nico-userid'])
+
         output("Logged in.\n", logging.INFO)
 
-    return session
+    return session, login_user_id
 
 
 def valid_url(url):
@@ -1287,16 +1302,16 @@ def valid_url(url):
     return url_mo if not None else False
 
 
-def process_url_mo(session, url_mo):
+def process_url_mo(session, url_mo, login_user_id):
     """Determine which function should process this URL object."""
 
     url_id = url_mo.group(4)
     if url_mo.group(3) == "mylist":
-        request_mylist(session, url_id)
+        request_mylist(session, url_id, login_user_id)
     elif url_mo.group(2):
         request_nama(session, url_id)
     elif url_mo.group(3) == "user":
-        request_user(session, url_id)
+        request_user(session, url_id, login_user_id)
     elif url_mo.group(1) == "seiga":
         if url_mo.group(3) == "watch":
             download_manga_chapter(session, url_id)
@@ -1305,7 +1320,7 @@ def process_url_mo(session, url_mo):
         else:
             download_image(session, url_id)
     else:
-        request_video(session, url_id)
+        request_video(session, url_id, login_user_id)
 
 
 def main():
@@ -1337,11 +1352,11 @@ def main():
         else:
             output("Proceeding with no login. Some videos may not be available for download or may only be available in a lower quality. For access to all videos, please provide a login with --username/--password or --netrc.\n", logging.WARNING)
 
-        session = login(account_username, account_password)
+        session, login_user_id = login(account_username, account_password)
         if url_mo:
-            process_url_mo(session, url_mo)
+            process_url_mo(session, url_mo, login_user_id)
         else:
-            read_file(session, cmdl_opts.input)
+            read_file(session, cmdl_opts.input, login_user_id)
 
     except Exception as error:
         log_exception(error)
