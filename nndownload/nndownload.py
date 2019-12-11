@@ -638,7 +638,7 @@ def request_video(session, video_id, login_user_id):
 
     document = BeautifulSoup(response.text, "html.parser")
 
-    if cmdl_opts.skip_video:
+    if cmdl_opts.skip_media:
         template_params = {}
         # .mp4 videos (HTML5)
         if document.find(id="js-initial-watch-data"):
